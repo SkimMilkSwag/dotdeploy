@@ -1,0 +1,10 @@
+# Compiled binaries and build output
+bin/
+dist/
+*.exe
+./dotdeploy
+
+# Go workspace / editor
+.vscode/
+.idea/
+*.swp
