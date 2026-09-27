@@ -52,6 +52,7 @@ dotdeploy -src ~/  # plan against itself; prints "up to date" when clean
 |-----------|-------------|------------------------------------------------------|
 | `-mode`   | `symlink`   | link strategy: `symlink` or `copy`                   |
 | `-dry-run`| `false`     | print the plan and exit without modifying anything   |
+| `-diff`   | `false`     | list only the dotfiles that would change, one per line |
 | `-src`    | `~/.dotfiles` | source directory containing the dotfiles          |
 
 ## Behavior notes

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -140,6 +141,24 @@ func ValidateDestDir(dst string) error {
 	return nil
 }
 
+// Diff compares srcDir and dstDir and reports which dotfiles differ between
+// the two. A dotfile counts as "different" when it is missing from dstDir,
+// or when the destination content does not match the source content (for
+// symlinks, the link target must resolve to the source file). Returns names
+// sorted alphabetically.
+func Diff(srcDir, dstDir string) ([]string, error) {
+	items, err := Plan(srcDir, dstDir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(items))
+	for _, it := range items {
+		names = append(names, it.Name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // PrintPlan writes a human-readable plan to w.
 func PrintPlan(w io.Writer, items []PlanItem) {
 	for _, it := range items {
@@ -154,6 +173,7 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("dotdeploy", flag.ContinueOnError)
 	mode := fs.String("mode", "symlink", `link strategy: "symlink" or "copy"`)
 	dry := fs.Bool("dry-run", false, "print the plan without touching anything")
+	diffOnly := fs.Bool("diff", false, "list only the dotfiles that would change, one per line")
 	srcDir := fs.String("src", "", "directory containing dotfiles (default: $HOME/.dotfiles)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: dotdeploy [flags] [dst-dir]
@@ -203,6 +223,20 @@ flags:
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dotdeploy:", err)
 		return 1
+	}
+	if *diffOnly {
+		names, err := Diff(srcDirAbs, dstAbs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "dotdeploy:", err)
+			return 1
+		}
+		for _, n := range names {
+			fmt.Fprintln(os.Stdout, n)
+		}
+		if len(names) == 0 {
+			fmt.Fprintln(os.Stdout, "up to date")
+		}
+		return 0
 	}
 	if *dry {
 		PrintPlan(os.Stdout, items)
