@@ -83,4 +83,8 @@ dotdeploy -src ~/  # plan against itself; prints "up to date" when clean
 ```bash
 go test ./...    # unit tests (stdlib `testing`, temp dirs)
 go vet ./...
+make build       # bin/dotdeploy
 ```
+
+CI (`.github/workflows/ci.yml`) runs `go vet` + `go test` on Go 1.23 and 1.24
+for every push to `main` and every pull request.
