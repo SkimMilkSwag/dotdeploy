@@ -16,6 +16,7 @@ type PlanItem struct {
 	Src  string // absolute source path
 	Dst  string // absolute destination path (or existing link)
 	Kind string // "copy" or "symlink"
+	Dir  bool   // true when the item is a directory tree
 }
 
 // LinkError describes one failed action with its underlying cause.
@@ -31,20 +32,56 @@ func (e *LinkError) Error() string {
 
 // Plan computes the set of actions needed to bring dstDir into sync with the
 // dotfiles in srcDir. Existing links that already point at the right target
-// are reported but do not need an action.
-func Plan(srcDir, dstDir string) ([]PlanItem, error) {
+// are reported but do not need an action. With recursive enabled, subdirectories
+// under srcDir are planned as single items (see copyTree/symlinkTree) instead
+// of being skipped. mode selects the link strategy for new entries: "symlink"
+// or "copy".
+func Plan(srcDir, dstDir string, mode string, recursive bool) ([]PlanItem, error) {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return nil, err
 	}
 	var items []PlanItem
 	for _, e := range entries {
-		if e.IsDir() {
-			continue // flat layout only in v1
-		}
 		name := e.Name()
 		src := filepath.Join(srcDir, name)
 		dst := filepath.Join(dstDir, name)
+
+		if e.IsDir() {
+			if !recursive {
+				continue // flat layout when -recursive is not set
+			}
+			if info, err := os.Lstat(dst); err == nil {
+				switch {
+				case info.Mode()&os.ModeSymlink != 0:
+					target, terr := os.Readlink(dst)
+					if terr != nil {
+						return nil, terr
+					}
+					resolvedSrc, serr := filepath.EvalSymlinks(src)
+					if serr != nil {
+						return nil, serr
+					}
+					resolvedTarget, err2 := filepath.EvalSymlinks(target)
+					if err2 != nil {
+						resolvedTarget = target // broken link: compare as-is
+					}
+					if resolvedTarget == resolvedSrc {
+						continue // already linked
+					}
+					items = append(items, PlanItem{Name: name, Src: src, Dst: dst, Kind: "symlink", Dir: true})
+				case info.IsDir():
+					items = append(items, PlanItem{Name: name, Src: src, Dst: dst, Kind: "copy", Dir: true})
+				default:
+					return nil, fmt.Errorf("%s: file in the way of directory %s", dst, name)
+				}
+			} else if !os.IsNotExist(err) {
+				return nil, err
+			} else {
+				items = append(items, PlanItem{Name: name, Src: src, Dst: dst, Kind: mode, Dir: true})
+			}
+			continue
+		}
 
 		if info, err := os.Lstat(dst); err == nil {
 			switch {
@@ -86,7 +123,11 @@ func Execute(items []PlanItem) error {
 		var err error
 		switch it.Kind {
 		case "copy":
-			err = copyFile(it.Src, it.Dst)
+			if it.Dir {
+				err = copyTree(it.Src, it.Dst)
+			} else {
+				err = copyFile(it.Src, it.Dst)
+			}
 		case "symlink":
 			if _, lerr := os.Lstat(it.Dst); lerr == nil {
 				if rerr := os.Remove(it.Dst); rerr != nil {
@@ -95,7 +136,11 @@ func Execute(items []PlanItem) error {
 			} else if !os.IsNotExist(lerr) {
 				return &LinkError{Op: "stat", Path: it.Dst, Err: lerr}
 			}
-			err = os.Symlink(it.Src, it.Dst)
+			if it.Dir {
+				err = symlinkTree(it.Src, it.Dst)
+			} else {
+				err = os.Symlink(it.Src, it.Dst)
+			}
 		default:
 			err = fmt.Errorf("unknown kind %q", it.Kind)
 		}
@@ -129,6 +174,56 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
+// copyTree recursively copies the directory tree src to dst, creating dst if
+// it does not exist. Existing files under dst are overwritten; nested
+// symlinks encountered in src are replaced with regular copies of their
+// targets so the deployed tree is self-contained.
+func copyTree(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		s := filepath.Join(src, e.Name())
+		d := filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			if err := copyTree(s, d); err != nil {
+				return err
+			}
+			continue
+		}
+		info, err := os.Lstat(s)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, rerr := filepath.EvalSymlinks(s)
+			if rerr != nil {
+				return &LinkError{Op: "copy", Path: s, Err: rerr}
+			}
+			if err := copyFile(resolved, d); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := copyFile(s, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// symlinkTree replaces dst with a single symlink pointing at the src directory.
+func symlinkTree(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.Symlink(src, dst)
+}
+
 // ValidateDestDir checks that dst exists and is a directory.
 func ValidateDestDir(dst string) error {
 	info, err := os.Stat(dst)
@@ -145,9 +240,10 @@ func ValidateDestDir(dst string) error {
 // the two. A dotfile counts as "different" when it is missing from dstDir,
 // or when the destination content does not match the source content (for
 // symlinks, the link target must resolve to the source file). Returns names
-// sorted alphabetically.
-func Diff(srcDir, dstDir string) ([]string, error) {
-	items, err := Plan(srcDir, dstDir)
+// sorted alphabetically. With recursive enabled, subdirectories are included
+// in the comparison. mode selects the link strategy for new entries.
+func Diff(srcDir, dstDir string, mode string, recursive bool) ([]string, error) {
+	items, err := Plan(srcDir, dstDir, mode, recursive)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +270,7 @@ func run(args []string) int {
 	mode := fs.String("mode", "symlink", `link strategy: "symlink" or "copy"`)
 	dry := fs.Bool("dry-run", false, "print the plan without touching anything")
 	diffOnly := fs.Bool("diff", false, "list only the dotfiles that would change, one per line")
+	recursive := fs.Bool("recursive", false, "deploy subdirectories (e.g. .config/nvim) as whole trees, not just flat files")
 	srcDir := fs.String("src", "", "directory containing dotfiles (default: $HOME/.dotfiles)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: dotdeploy [flags] [dst-dir]
@@ -219,13 +316,13 @@ flags:
 		return 2
 	}
 
-	items, err := Plan(srcDirAbs, dstAbs)
+	items, err := Plan(srcDirAbs, dstAbs, *mode, *recursive)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dotdeploy:", err)
 		return 1
 	}
 	if *diffOnly {
-		names, err := Diff(srcDirAbs, dstAbs)
+		names, err := Diff(srcDirAbs, dstAbs, *mode, *recursive)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "dotdeploy:", err)
 			return 1

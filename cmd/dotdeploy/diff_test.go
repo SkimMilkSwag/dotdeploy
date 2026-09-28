@@ -15,7 +15,7 @@ func TestDiffEmptyWhenInSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	names, err := Diff(src, dst)
+	names, err := Diff(src, dst, "symlink", false)
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestDiffReportsMissingAndStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	names, err := Diff(src, dst)
+	names, err := Diff(src, dst, "symlink", false)
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
@@ -61,11 +61,28 @@ func TestDiffIgnoresSubdirs(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(src, ".config", "nested"), "y")
 
-	names, err := Diff(src, dst)
+	names, err := Diff(src, dst, "symlink", false)
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
 	if len(names) != 0 {
-		t.Errorf("subdirs should be ignored in v1, got %v", names)
+		t.Errorf("subdirs should be ignored without -recursive, got %v", names)
+	}
+}
+
+func TestDiffIncludesSubdirsWhenRecursive(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(src, ".config", "nested"), "y")
+
+	names, err := Diff(src, dst, "symlink", true)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(names) != 1 || names[0] != ".config" {
+		t.Errorf("recursive diff should list the missing .config dir, got %v", names)
 	}
 }

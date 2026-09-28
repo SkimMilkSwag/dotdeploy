@@ -37,6 +37,9 @@ dotdeploy -src ~/.dotfiles ~ --dry-run
 
 # Copy files instead of linking (good for read-only home dirs or CI images)
 dotdeploy -mode copy -src ~/.dotfiles ~/target
+
+# Deploy nested layouts like .config/nvim as whole trees
+dotdeploy -recursive -src ~/.dotfiles ~
 ```
 
 With no `dst-dir` argument the source directory is treated as its own deploy
@@ -53,12 +56,16 @@ dotdeploy -src ~/  # plan against itself; prints "up to date" when clean
 | `-mode`   | `symlink`   | link strategy: `symlink` or `copy`                   |
 | `-dry-run`| `false`     | print the plan and exit without modifying anything   |
 | `-diff`   | `false`     | list only the dotfiles that would change, one per line |
+| `-recursive` | `false`  | deploy subdirectories (e.g. `.config/nvim`) as whole trees |
 | `-src`    | `~/.dotfiles` | source directory containing the dotfiles          |
 
 ## Behavior notes
 
-- **Flat layout only (v1).** Subdirectories inside the source are ignored;
-  nested layouts like `.config/nvim` come in a later release.
+- **Flat layout by default.** Subdirectories inside the source are ignored
+  unless `-recursive` is set. With `-recursive`, each subdirectory is planned
+  as a single item: in symlink mode it becomes one link to the source
+  directory, and in copy mode the whole tree is copied (nested symlinks are
+  materialized as regular files so the deployed tree is self-contained).
 - A destination entry that is a **symlink pointing at the source file** is
   considered up to date and skipped.
 - A symlink pointing somewhere else gets re-pointed (removed and recreated).
