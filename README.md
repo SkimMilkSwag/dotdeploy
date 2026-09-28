@@ -57,6 +57,7 @@ dotdeploy -src ~/  # plan against itself; prints "up to date" when clean
 | `-dry-run`| `false`     | print the plan and exit without modifying anything   |
 | `-diff`   | `false`     | list only the dotfiles that would change, one per line |
 | `-recursive` | `false`  | deploy subdirectories (e.g. `.config/nvim`) as whole trees |
+| `-backup`   | ``            | move displaced entries into a timestamped dir under this path |
 | `-src`    | `~/.dotfiles` | source directory containing the dotfiles          |
 
 ## Behavior notes
@@ -72,6 +73,9 @@ dotdeploy -src ~/  # plan against itself; prints "up to date" when clean
 - A **regular file** at the destination is always planned as a copy (it is
   overwritten on execute). If you want that file symlinked instead, remove it
   once and let the next run link it — or run with `-dry-run` to preview.
+- With `-backup DIR`, entries that would be displaced (re-linked or
+  overwritten) are moved into a timestamped subdirectory of DIR
+  (`DIR/dotdeploy-<timestamp>-<pid>/`) instead of being deleted.
 - File permissions from the source are preserved for copies.
 
 ## Development

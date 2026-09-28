@@ -113,7 +113,7 @@ func TestPlanWithSymlinkedSrcDir(t *testing.T) {
 	if len(items) != 1 || items[0].Name != ".vimrc" {
 		t.Fatalf("want only the missing file planned, got %+v", items)
 	}
-	if err := Execute(items); err != nil {
+	if err := Execute(items, ExecuteOptions{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dst, ".vimrc"))
@@ -195,7 +195,7 @@ func TestExecuteSymlinkCreatesLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if err := Execute(items); err != nil {
+	if err := Execute(items, ExecuteOptions{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	got := readLink(t, filepath.Join(dst, ".tmux.conf"))
@@ -224,7 +224,7 @@ func TestExecuteCopyOverwritesExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if err := Execute(items); err != nil {
+	if err := Execute(items, ExecuteOptions{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dst, ".bash_profile"))
@@ -258,7 +258,7 @@ func TestExecuteIdempotentWhenAlreadyLinked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	if err := Execute(items); err != nil {
+	if err := Execute(items, ExecuteOptions{}); err != nil {
 		t.Fatalf("Execute on empty plan: %v", err)
 	}
 	got := readLink(t, target)
@@ -288,7 +288,7 @@ func TestPlanRecursiveMissingDir(t *testing.T) {
 		t.Fatalf("want one symlink dir item for .config, got %+v", items)
 	}
 
-	if err := Execute(items); err != nil {
+	if err := Execute(items, ExecuteOptions{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	got := readLink(t, filepath.Join(dst, ".config"))
@@ -331,7 +331,7 @@ func TestPlanRecursiveCopyModeCopiesTree(t *testing.T) {
 	if len(items) != 1 || !items[0].Dir || items[0].Kind != "copy" {
 		t.Fatalf("want one copy dir item, got %+v", items)
 	}
-	if err := Execute(items); err != nil {
+	if err := Execute(items, ExecuteOptions{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -390,6 +390,94 @@ func TestPlanRecursiveFileInTheWayOfDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "file in the way") {
 		t.Errorf("error = %q, want mention of file in the way", err)
+	}
+}
+
+func TestExecuteBackupMovesDisplacedEntries(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	backups := t.TempDir()
+	writeFile(t, filepath.Join(src, ".zshrc"), "new zsh")
+	// pre-existing regular file at dst (local edits) and a stale symlink
+	if err := os.WriteFile(filepath.Join(dst, ".zshrc"), []byte("old zsh"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(src, ".vimrc"), "set number")
+	other := filepath.Join(t.TempDir(), "old")
+	writeFile(t, other, "stale target")
+	if err := os.Symlink(other, filepath.Join(dst, ".vimrc")); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := Plan(src, dst, "symlink", false)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %+v", items)
+	}
+
+	if err := Execute(items, ExecuteOptions{BackupDir: backups}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// both entries must be backed up under a timestamped subdir
+	entries, err := os.ReadDir(backups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() || !strings.HasPrefix(entries[0].Name(), "dotdeploy-") {
+		t.Fatalf("want exactly one dotdeploy-* backup dir, got %+v", entries)
+	}
+	sub := filepath.Join(backups, entries[0].Name())
+
+	zshBackup, err := os.ReadFile(filepath.Join(sub, ".zshrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(zshBackup) != "old zsh" {
+		t.Errorf("backed-up .zshrc = %q, want preserved old content", zshBackup)
+	}
+	vimBackup := readLink(t, filepath.Join(sub, ".vimrc"))
+	if vimBackup != other {
+		t.Errorf("backed-up .vimrc target = %q, want %q", vimBackup, other)
+	}
+
+	// dst: .zshrc was a regular file -> overwritten in place with src content
+	zshData, err := os.ReadFile(filepath.Join(dst, ".zshrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(zshData) != "new zsh" {
+		t.Errorf(".zshrc content = %q, want the new source content", zshData)
+	}
+	// .vimrc was a stale link -> re-pointed at src
+	gotVim := readLink(t, filepath.Join(dst, ".vimrc"))
+	if gotVim != filepath.Join(src, ".vimrc") {
+		t.Errorf(".vimrc re-linked to %q", gotVim)
+	}
+}
+
+func TestExecuteNoBackupRemovesStaleLink(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeFile(t, filepath.Join(src, ".profile"), "new")
+	other := filepath.Join(t.TempDir(), "old")
+	writeFile(t, other, "stale target")
+	if err := os.Symlink(other, filepath.Join(dst, ".profile")); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := Plan(src, dst, "symlink", false)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if err := Execute(items, ExecuteOptions{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := readLink(t, filepath.Join(dst, ".profile"))
+	if got != filepath.Join(src, ".profile") {
+		t.Errorf("re-linked to %q", got)
 	}
 }
 

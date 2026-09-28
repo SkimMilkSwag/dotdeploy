@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // PlanItem is a single planned file action.
@@ -116,13 +118,41 @@ func Plan(srcDir, dstDir string, mode string, recursive bool) ([]PlanItem, error
 	return items, nil
 }
 
+// ExecuteOptions controls how Execute applies the planned actions.
+type ExecuteOptions struct {
+	// BackupDir, when non-empty, receives a timestamped subdirectory that
+	// existing destination entries are moved into before being overwritten
+	// or re-linked. Empty disables backups (entries are removed as before).
+	BackupDir string
+}
+
 // Execute applies the planned actions. In symlink mode any existing file or
-// link at the destination is removed before creating the new one.
-func Execute(items []PlanItem) error {
-	for _, it := range items {
+// link at the destination is removed before creating the new one; with
+// BackupDir set, the displaced entry is moved into a timestamped backup
+// directory instead of being deleted.
+func Execute(items []PlanItem, opts ExecuteOptions) error {
+	var backupSub string
+	for i, it := range items {
+		if i == 0 && opts.BackupDir != "" {
+			sub, err := newBackupSub(opts.BackupDir)
+			if err != nil {
+				return err
+			}
+			backupSub = sub
+		}
 		var err error
 		switch it.Kind {
 		case "copy":
+			if backupSub != "" && it.Name != "" {
+				// a regular file at dst is about to be overwritten: preserve it
+				if _, lerr := os.Lstat(it.Dst); lerr == nil {
+					if berr := moveBackup(backupSub, it.Dst, it.Name); berr != nil {
+						return berr
+					}
+				} else if !os.IsNotExist(lerr) {
+					return &LinkError{Op: "stat", Path: it.Dst, Err: lerr}
+				}
+			}
 			if it.Dir {
 				err = copyTree(it.Src, it.Dst)
 			} else {
@@ -130,7 +160,11 @@ func Execute(items []PlanItem) error {
 			}
 		case "symlink":
 			if _, lerr := os.Lstat(it.Dst); lerr == nil {
-				if rerr := os.Remove(it.Dst); rerr != nil {
+				if backupSub != "" && it.Name != "" {
+					if berr := moveBackup(backupSub, it.Dst, it.Name); berr != nil {
+						return berr
+					}
+				} else if rerr := os.Remove(it.Dst); rerr != nil {
 					return &LinkError{Op: "remove", Path: it.Dst, Err: rerr}
 				}
 			} else if !os.IsNotExist(lerr) {
@@ -147,6 +181,27 @@ func Execute(items []PlanItem) error {
 		if err != nil {
 			return &LinkError{Op: it.Kind, Path: it.Dst, Err: err}
 		}
+	}
+	return nil
+}
+
+// newBackupSub creates (and returns) a timestamped subdirectory under
+// backupDir for holding displaced entries. The name includes the process ID
+// so back-to-back runs in the same second don't collide.
+func newBackupSub(backupDir string) (string, error) {
+	sub := filepath.Join(backupDir, fmt.Sprintf("dotdeploy-%s", time.Now().Format("20060102-150405"))+"-"+strconv.Itoa(os.Getpid()))
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		return "", &LinkError{Op: "makedirs", Path: sub, Err: err}
+	}
+	return sub, nil
+}
+
+// moveBackup moves the destination entry at dst (a file or a symlink) into
+// backupSub under name.
+func moveBackup(backupSub, dst, name string) error {
+	target := filepath.Join(backupSub, name)
+	if err := os.Rename(dst, target); err != nil {
+		return &LinkError{Op: "backup", Path: dst, Err: err}
 	}
 	return nil
 }
@@ -271,6 +326,7 @@ func run(args []string) int {
 	dry := fs.Bool("dry-run", false, "print the plan without touching anything")
 	diffOnly := fs.Bool("diff", false, "list only the dotfiles that would change, one per line")
 	recursive := fs.Bool("recursive", false, "deploy subdirectories (e.g. .config/nvim) as whole trees, not just flat files")
+	backups := fs.String("backup", "", "move displaced destination entries into a timestamped dir under this path instead of deleting them")
 	srcDir := fs.String("src", "", "directory containing dotfiles (default: $HOME/.dotfiles)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: dotdeploy [flags] [dst-dir]
@@ -339,7 +395,7 @@ flags:
 		PrintPlan(os.Stdout, items)
 		return 0
 	}
-	if err := Execute(items); err != nil {
+	if err := Execute(items, ExecuteOptions{BackupDir: *backups}); err != nil {
 		fmt.Fprintln(os.Stderr, "dotdeploy:", err)
 		return 1
 	}
