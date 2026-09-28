@@ -40,6 +40,10 @@ dotdeploy -mode copy -src ~/.dotfiles ~/target
 
 # Deploy nested layouts like .config/nvim as whole trees
 dotdeploy -recursive -src ~/.dotfiles ~
+
+# Scriptable output: the plan as a JSON array, or changed names as a JSON list
+dotdeploy -src ~/.dotfiles ~ --dry-run --json
+dotdeploy -src ~/.dotfiles ~ --diff --json
 ```
 
 With no `dst-dir` argument the source directory is treated as its own deploy
@@ -58,6 +62,7 @@ dotdeploy -src ~/  # plan against itself; prints "up to date" when clean
 | `-diff`   | `false`     | list only the dotfiles that would change, one per line |
 | `-recursive` | `false`  | deploy subdirectories (e.g. `.config/nvim`) as whole trees |
 | `-backup`   | ``            | move displaced entries into a timestamped dir under this path |
+| `-json`     | `false`       | emit machine-readable JSON (plan for dry-run, names for diff) |
 | `-src`    | `~/.dotfiles` | source directory containing the dotfiles          |
 
 ## Behavior notes

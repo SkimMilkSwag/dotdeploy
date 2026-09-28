@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -478,6 +479,63 @@ func TestExecuteNoBackupRemovesStaleLink(t *testing.T) {
 	got := readLink(t, filepath.Join(dst, ".profile"))
 	if got != filepath.Join(src, ".profile") {
 		t.Errorf("re-linked to %q", got)
+	}
+}
+
+func TestPlanJSONSortedAndComplete(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	writeFile(t, filepath.Join(src, ".vimrc"), "set number")
+	writeFile(t, filepath.Join(src, ".zshrc"), "export PATH=...")
+	if err := os.MkdirAll(filepath.Join(src, ".config/nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(src, ".config/nvim/init.lua"), "local ok = true")
+
+	items, err := Plan(src, dst, "symlink", true)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	data, err := planJSON(items)
+	if err != nil {
+		t.Fatalf("planJSON: %v", err)
+	}
+
+	var entries []PlanEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("output is not a JSON array: %v (%s)", err, data)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(entries))
+	}
+	// sorted by name: .config < .vimrc < .zshrc
+	for i := 1; i < len(entries); i++ {
+		if entries[i-1].Name >= entries[i].Name {
+			t.Errorf("entries not sorted: %q before %q", entries[i-1].Name, entries[i].Name)
+		}
+	}
+	for _, e := range entries {
+		if e.Src == "" || e.Dst == "" || (e.Kind != "symlink" && e.Kind != "copy") {
+			t.Errorf("incomplete entry %+v", e)
+		}
+	}
+	configEntry := entries[0]
+	if !configEntry.Dir || configEntry.Name != ".config" {
+		t.Errorf("first entry should be the .config dir, got %+v", configEntry)
+	}
+}
+
+func TestPlanJSONEmpty(t *testing.T) {
+	data, err := planJSON(nil)
+	if err != nil {
+		t.Fatalf("planJSON(nil): %v", err)
+	}
+	var entries []PlanEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("want empty array, got %+v", entries)
 	}
 }
 

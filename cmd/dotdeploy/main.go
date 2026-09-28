@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"encoding/json"
 )
 
 // PlanItem is a single planned file action.
@@ -320,6 +322,32 @@ func PrintPlan(w io.Writer, items []PlanItem) {
 	}
 }
 
+// PlanEntry is the JSON representation of one planned action.
+type PlanEntry struct {
+	Name string `json:"name"`
+	Src  string `json:"src"`
+	Dst  string `json:"dst"`
+	Kind string `json:"kind"`
+	Dir  bool   `json:"dir,omitempty"`
+}
+
+// planJSON renders the plan as a JSON array (empty array when nothing needs
+// to change).
+func planJSON(items []PlanItem) ([]byte, error) {
+	entries := make([]PlanEntry, 0, len(items))
+	for _, it := range items {
+		entries = append(entries, PlanEntry{Name: it.Name, Src: it.Src, Dst: it.Dst, Kind: it.Kind, Dir: it.Dir})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return json.Marshal(entries)
+}
+
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
 func run(args []string) int {
 	fs := flag.NewFlagSet("dotdeploy", flag.ContinueOnError)
 	mode := fs.String("mode", "symlink", `link strategy: "symlink" or "copy"`)
@@ -327,6 +355,7 @@ func run(args []string) int {
 	diffOnly := fs.Bool("diff", false, "list only the dotfiles that would change, one per line")
 	recursive := fs.Bool("recursive", false, "deploy subdirectories (e.g. .config/nvim) as whole trees, not just flat files")
 	backups := fs.String("backup", "", "move displaced destination entries into a timestamped dir under this path instead of deleting them")
+	jsonOut := fs.Bool("json", false, "emit machine-readable JSON (plan or changed-names) for scripting")
 	srcDir := fs.String("src", "", "directory containing dotfiles (default: $HOME/.dotfiles)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: dotdeploy [flags] [dst-dir]
@@ -383,6 +412,13 @@ flags:
 			fmt.Fprintln(os.Stderr, "dotdeploy:", err)
 			return 1
 		}
+		if *jsonOut {
+			if werr := writeJSON(os.Stdout, names); werr != nil {
+				fmt.Fprintln(os.Stderr, "dotdeploy:", werr)
+				return 1
+			}
+			return 0
+		}
 		for _, n := range names {
 			fmt.Fprintln(os.Stdout, n)
 		}
@@ -392,6 +428,15 @@ flags:
 		return 0
 	}
 	if *dry {
+		if *jsonOut {
+			data, merr := planJSON(items)
+			if merr != nil {
+				fmt.Fprintln(os.Stderr, "dotdeploy:", merr)
+				return 1
+			}
+			fmt.Fprintln(os.Stdout, string(data))
+			return 0
+		}
 		PrintPlan(os.Stdout, items)
 		return 0
 	}
